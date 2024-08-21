@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use log::{debug, trace};
-
 use super::http_utils::HttpProtocol;
 
 #[allow(dead_code)]
@@ -232,7 +230,6 @@ impl Response {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        trace!("-- serizalize --");
         let mut raw_response: Vec<u8> = Vec::new();
 
         // make response
@@ -262,7 +259,6 @@ impl Response {
         raw_response.extend(b"\r\n");
         raw_response.extend(&self.body);
 
-        debug!("{}", String::from_utf8_lossy(&raw_response));
         raw_response
     }
 }

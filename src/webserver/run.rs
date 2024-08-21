@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::{
+    fmt::Debug,
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
 };
@@ -9,18 +12,28 @@ use crate::webserver::request::Request;
 
 use super::{api_endpoint_manager::ApiEndPointManager, request::parse_request_before_body};
 
-pub fn run_ipv4_server(ip: &str, port: u16) {
+#[allow(dead_code)]
+pub fn run_ipv4_server_event_based(ip: &str, port: u16) {}
+
+#[allow(dead_code)]
+pub fn run_ipv4_server_multithreaded(ip: &str, port: u16) {
     info!("Starting Server on {}:{}...", ip, port);
 
     let ip_port_string = format!("{}:{}", ip, port);
     let listener = TcpListener::bind(ip_port_string).unwrap();
 
     let manager = ApiEndPointManager::get();
+    let manager = Arc::new(manager);
 
     info!("Started...");
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => handle_stream(&manager, stream),
+            Ok(stream) => {
+                let manager = Arc::clone(&manager);
+                std::thread::spawn(|| {
+                    handle_stream(manager, stream);
+                });
+            }
             Err(e) => {
                 error!("Connection Failed, {}", e);
             }
@@ -28,7 +41,33 @@ pub fn run_ipv4_server(ip: &str, port: u16) {
     }
 }
 
-pub fn handle_stream(endpoint_manager: &ApiEndPointManager, mut stream: TcpStream) {
+#[allow(dead_code)]
+pub fn run_ipv4_server(ip: &str, port: u16) {
+    info!("Starting Server on {}:{}...", ip, port);
+
+    let ip_port_string = format!("{}:{}", ip, port);
+    let listener = TcpListener::bind(ip_port_string).unwrap();
+
+    let manager = ApiEndPointManager::get();
+    let manager = Arc::new(manager);
+
+    info!("Started...");
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let manager = Arc::clone(&manager);
+                std::thread::spawn(|| {
+                    handle_stream(manager, stream);
+                });
+            }
+            Err(e) => {
+                error!("Connection Failed, {}", e);
+            }
+        }
+    }
+}
+
+pub fn handle_stream(endpoint_manager: Arc<ApiEndPointManager>, mut stream: TcpStream) {
     let mut request_buf = Vec::new();
     let mut reader = BufReader::new(&stream);
 
@@ -49,17 +88,24 @@ pub fn handle_stream(endpoint_manager: &ApiEndPointManager, mut stream: TcpStrea
     // Get body
     let mut body_buf = Vec::new();
     let result = read_body(&mut reader, &mut body_buf, &headers).unwrap_or_else(|e| {
-        error!("Error in reading body: {}", e);
+        info!("Determined body doesn't exist: {}", e);
         return 0;
     });
 
     let body = &body_buf[..result];
 
+    debug!(
+        "\n{:?} {:} {:?}\n{:?}\n{:}",
+        request_line.method,
+        request_line.path,
+        request_line.protocol,
+        HeaderDebugWrapper {
+            headers: headers.clone()
+        },
+        String::from_utf8_lossy(body),
+    );
+
     // Make request struct
-    debug!("Incoming Request:");
-    debug!("{:?} {:?} {:?}", request_line.method, request_line.path, request_line.protocol);
-    debug!("{:?}", headers);
-    debug!("-- body start -- \n{:?}", String::from_utf8_lossy(body));
     let request = Request {
         request_line,
         headers,
@@ -68,7 +114,7 @@ pub fn handle_stream(endpoint_manager: &ApiEndPointManager, mut stream: TcpStrea
 
     let response = endpoint_manager.handle_request(&request);
     let raw_response = response.serialize();
-    debug!("raw_response: {}", String::from_utf8_lossy(&raw_response));
+    debug!("raw_response\n{}", String::from_utf8_lossy(&raw_response));
     let _ = stream.write_all(&raw_response).unwrap();
 }
 
@@ -123,4 +169,22 @@ fn byte_slice_to_i32(bytes_slice: &[u8]) -> Result<i32, &'static str> {
         }
     }
     Ok(total)
+}
+
+struct HeaderDebugWrapper<'a> {
+    headers: HashMap<&'a [u8], &'a [u8]>,
+}
+
+impl Debug for HeaderDebugWrapper<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (&key, &val) in self.headers.iter() {
+            write!(
+                f,
+                "{}: {}\n",
+                String::from_utf8_lossy(&key),
+                String::from_utf8_lossy(&val)
+            )?;
+        }
+        Ok(())
+    }
 }

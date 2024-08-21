@@ -57,6 +57,10 @@ pub fn parse_request_before_body(
         .map(|(i, _)| i as usize)
         .collect();
 
+    if crlf_position.len() <= 2 {
+        return Err("Something is wrong in request. CRLF <= 2 detected");
+    }
+
     // extract request_line
     let request_line = parse_request_line(&request_buf[0..crlf_position[0]])?;
 
