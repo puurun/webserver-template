@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::{JoinHandle, self};
 use std::{
     fmt::Debug,
     io::{BufRead, BufReader, Read, Write},
@@ -12,12 +14,60 @@ use crate::webserver::request::Request;
 
 use super::{api_endpoint_manager::ApiEndPointManager, request::parse_request_before_body};
 
+struct Worker {
+    join_handle: Option<JoinHandle<()>>,
+}
+
+struct ThreadPool {
+    workers: Vec<Worker>,
+    receiver: Arc<Mutex<Receiver<TcpStream>>>,
+    sender: Sender<TcpStream>,
+}
+
+impl ThreadPool {
+    fn new() -> Self {
+        let (tx, rx) = mpsc::channel::<TcpStream>();
+        let mutex = Mutex::new(rx);
+        Self {
+            workers: Vec::new(),
+            receiver: Arc::new(mutex),
+            sender: tx,
+        }
+    }
+
+    fn spawn_threads(&mut self, manager: Arc<ApiEndPointManager>, num_threads: i32) {
+        for _ in 0..num_threads {
+            let manager = Arc::clone(&manager);
+            let rx = self.receiver.clone();
+            let join_handle = std::thread::spawn(|| {
+                info!("Created: {:?}", thread::current());
+                thread_main(manager, rx);
+            });
+            let join_handle = Some(join_handle);
+
+            self.workers.push(Worker { join_handle });
+        }
+    }
+}
+
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        
+        for worker in self.workers.iter_mut() {
+            info!("Shutting down worker");
+            if let Some(handle) = worker.join_handle.take() {
+                handle.join().unwrap();
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub fn run_ipv4_server_event_based(ip: &str, port: u16) {}
 
 #[allow(dead_code)]
 pub fn run_ipv4_server_multithreaded(ip: &str, port: u16) {
-    info!("Starting Server on {}:{}...", ip, port);
+    info!("Starting Server (multi) on {}:{}...", ip, port);
 
     let ip_port_string = format!("{}:{}", ip, port);
     let listener = TcpListener::bind(ip_port_string).unwrap();
@@ -25,19 +75,49 @@ pub fn run_ipv4_server_multithreaded(ip: &str, port: u16) {
     let manager = ApiEndPointManager::get();
     let manager = Arc::new(manager);
 
+    let mut thread_pool = ThreadPool::new();
+    thread_pool.spawn_threads(manager, 1024);
+
     info!("Started...");
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let manager = Arc::clone(&manager);
-                std::thread::spawn(|| {
-                    handle_stream(manager, stream);
-                });
+                let result = thread_pool.sender.send(stream);
+                if let Err(e) = result {
+                    error!("Error while distributing TcpStream: {e}")
+                }
             }
             Err(e) => {
                 error!("Connection Failed, {}", e);
             }
         }
+    }
+}
+
+pub fn thread_main(manager: Arc<ApiEndPointManager>, rx: Arc<Mutex<Receiver<TcpStream>>>) {
+    loop {
+        let acquire = rx.lock();
+        info!("{:?} alive", thread::current());
+        let receiver = match acquire {
+            Ok(rx) => rx,
+            Err(e) => {
+                error!("Error while holding the lock: {}", e);
+                continue;
+            }
+        };
+        
+        let stream = match receiver.recv() {
+            Ok(stream) => stream,
+            Err(e) => {
+                error!("Error while receiving TcpStream, {e}");
+                continue;
+            }
+        };
+
+        drop(receiver);
+
+
+        handle_stream(manager.clone(), stream);    
     }
 }
 

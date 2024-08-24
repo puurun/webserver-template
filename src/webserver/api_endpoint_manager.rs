@@ -45,6 +45,7 @@ impl ApiEndPoint {
         let mut pattern = self.path.chars();
         let mut other = other.chars();
 
+
         loop {
             let pc = pattern.next();
             let oc = other.next();
@@ -57,7 +58,8 @@ impl ApiEndPoint {
                         return false;
                     }
                 }
-                _ => break,
+                (None, None) => break,
+                _ => return false,
             }
         }
 
